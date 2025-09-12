@@ -7,6 +7,11 @@
 (define-constant err-invalid-option (err u105))
 (define-constant err-poll-not-active (err u106))
 
+(define-constant err-delegation-exists (err u107))
+(define-constant err-delegation-not-found (err u108))
+(define-constant err-cannot-delegate-to-self (err u109))
+(define-constant err-delegate-already-voted (err u110))
+
 (define-data-var poll-counter uint u0)
 
 (define-map polls
@@ -174,5 +179,82 @@
             (merge poll-data { status: "ended" })
         )
         (ok true)
+    )
+)
+
+
+(define-map poll-delegations
+    { poll-id: uint, delegator: principal }
+    { delegate: principal }
+)
+
+(define-map delegation-votes
+    { poll-id: uint, delegate: principal, delegator: principal }
+    { option-id: uint }
+)
+
+(define-read-only (get-delegate (poll-id uint) (delegator principal))
+    (map-get? poll-delegations { poll-id: poll-id, delegator: delegator })
+)
+
+(define-read-only (get-delegation-vote (poll-id uint) (delegate principal) (delegator principal))
+    (map-get? delegation-votes { poll-id: poll-id, delegate: delegate, delegator: delegator })
+)
+
+(define-public (delegate-vote (poll-id uint) (delegate principal))
+    (let ((poll-data (unwrap! (get-poll poll-id) err-poll-not-found)))
+        (asserts! (not (is-eq tx-sender delegate)) err-cannot-delegate-to-self)
+        (asserts! (is-poll-active poll-id) err-poll-not-active)
+        (asserts! (is-none (get-user-vote tx-sender poll-id)) err-already-voted)
+        (asserts! (is-none (get-delegate poll-id tx-sender)) err-delegation-exists)
+        
+        (map-set poll-delegations
+            { poll-id: poll-id, delegator: tx-sender }
+            { delegate: delegate }
+        )
+        (ok true)
+    )
+)
+
+(define-public (revoke-delegation (poll-id uint))
+    (let ((delegation-data (unwrap! (get-delegate poll-id tx-sender) err-delegation-not-found)))
+        (asserts! (is-poll-active poll-id) err-poll-not-active)
+        
+        (map-delete poll-delegations { poll-id: poll-id, delegator: tx-sender })
+        (ok true)
+    )
+)
+
+(define-public (vote-for-delegator (poll-id uint) (delegator principal) (option-id uint))
+    (let 
+        (
+            (poll-data (unwrap! (get-poll poll-id) err-poll-not-found))
+            (delegation-data (unwrap! (get-delegate poll-id delegator) err-delegation-not-found))
+        )
+        (asserts! (is-eq (get delegate delegation-data) tx-sender) err-owner-only)
+        (asserts! (is-poll-active poll-id) err-poll-not-active)
+        (asserts! (is-none (get-user-vote delegator poll-id)) err-already-voted)
+        (asserts! (<= option-id (get option-count poll-data)) err-invalid-option)
+        (asserts! (> option-id u0) err-invalid-option)
+        (asserts! (is-none (get-delegation-vote poll-id tx-sender delegator)) err-delegate-already-voted)
+        
+        (let ((option-data (unwrap! (get-poll-option poll-id option-id) err-invalid-option)))
+            (map-set poll-options
+                { poll-id: poll-id, option-id: option-id }
+                { 
+                    text: (get text option-data),
+                    votes: (+ (get votes option-data) u1)
+                }
+            )
+            (map-set user-votes
+                { voter: delegator, poll-id: poll-id }
+                { option-id: option-id }
+            )
+            (map-set delegation-votes
+                { poll-id: poll-id, delegate: tx-sender, delegator: delegator }
+                { option-id: option-id }
+            )
+            (ok true)
+        )
     )
 )
