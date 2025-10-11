@@ -12,6 +12,9 @@
 (define-constant err-cannot-delegate-to-self (err u109))
 (define-constant err-delegate-already-voted (err u110))
 
+(define-constant err-insufficient-reputation (err u111))
+(define-constant err-reputation-already-awarded (err u112))
+
 (define-data-var poll-counter uint u0)
 
 (define-map polls
@@ -256,5 +259,74 @@
             )
             (ok true)
         )
+    )
+)
+
+(define-map user-reputation
+    { user: principal }
+    {
+        total-points: uint,
+        polls-created: uint,
+        polls-completed: uint,
+        votes-cast: uint,
+        level: uint
+    }
+)
+
+(define-map poll-reputation-awarded
+    { poll-id: uint }
+    { awarded: bool }
+)
+
+(define-read-only (get-reputation (user principal))
+    (default-to 
+        { total-points: u0, polls-created: u0, polls-completed: u0, votes-cast: u0, level: u0 }
+        (map-get? user-reputation { user: user })
+    )
+)
+
+(define-read-only (get-reputation-level (user principal))
+    (get level (get-reputation user))
+)
+
+(define-read-only (calculate-level (points uint))
+    (if (>= points u1000) u5
+        (if (>= points u500) u4
+            (if (>= points u200) u3
+                (if (>= points u50) u2
+                    (if (>= points u10) u1 u0)
+                )
+            )
+        )
+    )
+)
+
+(define-private (update-reputation-internal (user principal) (points-delta uint) (action (string-ascii 20)))
+    (let ((current-rep (get-reputation user)))
+        (let ((new-points (+ (get total-points current-rep) points-delta)))
+            (map-set user-reputation
+                { user: user }
+                (merge current-rep {
+                    total-points: new-points,
+                    polls-created: (if (is-eq action "poll-created") (+ (get polls-created current-rep) u1) (get polls-created current-rep)),
+                    polls-completed: (if (is-eq action "poll-completed") (+ (get polls-completed current-rep) u1) (get polls-completed current-rep)),
+                    votes-cast: (if (is-eq action "vote-cast") (+ (get votes-cast current-rep) u1) (get votes-cast current-rep)),
+                    level: (calculate-level new-points)
+                })
+            )
+            true
+        )
+    )
+)
+
+(define-public (award-poll-completion-reputation (poll-id uint))
+    (let ((poll-data (unwrap! (get-poll poll-id) err-poll-not-found)))
+        (asserts! (is-eq (get creator poll-data) tx-sender) err-owner-only)
+        (asserts! (is-eq (get status poll-data) "ended") err-poll-not-active)
+        (asserts! (is-none (map-get? poll-reputation-awarded { poll-id: poll-id })) err-reputation-already-awarded)
+        
+        (map-set poll-reputation-awarded { poll-id: poll-id } { awarded: true })
+        (update-reputation-internal tx-sender u50 "poll-completed")
+        (ok true)
     )
 )
