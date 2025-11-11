@@ -15,6 +15,11 @@
 (define-constant err-insufficient-reputation (err u111))
 (define-constant err-reputation-already-awarded (err u112))
 
+
+(define-constant err-invalid-category (err u113))
+(define-constant err-category-not-found (err u114))
+(define-constant err-category-already-set (err u115))
+
 (define-data-var poll-counter uint u0)
 
 (define-map polls
@@ -328,5 +333,68 @@
         (map-set poll-reputation-awarded { poll-id: poll-id } { awarded: true })
         (update-reputation-internal tx-sender u50 "poll-completed")
         (ok true)
+    )
+)
+
+
+(define-map poll-categories
+    { poll-id: uint }
+    { category: (string-ascii 32) }
+)
+
+(define-map category-polls
+    { category: (string-ascii 32), index: uint }
+    { poll-id: uint }
+)
+
+(define-map category-counts
+    { category: (string-ascii 32) }
+    { count: uint }
+)
+
+(define-read-only (get-poll-category (poll-id uint))
+    (map-get? poll-categories { poll-id: poll-id })
+)
+
+(define-read-only (get-category-poll-count (category (string-ascii 32)))
+    (get count (default-to { count: u0 } (map-get? category-counts { category: category })))
+)
+
+(define-read-only (get-poll-by-category (category (string-ascii 32)) (index uint))
+    (map-get? category-polls { category: category, index: index })
+)
+
+(define-read-only (get-category-polls-batch (category (string-ascii 32)) (start uint) (limit uint))
+    (ok {
+        poll-1: (get-poll-by-category category start),
+        poll-2: (get-poll-by-category category (+ start u1)),
+        poll-3: (get-poll-by-category category (+ start u2)),
+        poll-4: (get-poll-by-category category (+ start u3)),
+        poll-5: (get-poll-by-category category (+ start u4)),
+        total: (get-category-poll-count category)
+    })
+)
+
+(define-public (set-poll-category (poll-id uint) (category (string-ascii 32)))
+    (let ((poll-data (unwrap! (get-poll poll-id) err-poll-not-found)))
+        (asserts! (is-eq (get creator poll-data) tx-sender) err-owner-only)
+        (asserts! (is-none (get-poll-category poll-id)) err-category-already-set)
+        (asserts! (> (len category) u0) err-invalid-category)
+        
+        (let ((current-count (get-category-poll-count category)))
+            (map-set poll-categories
+                { poll-id: poll-id }
+                { category: category }
+            )
+            (map-set category-polls
+                { category: category, index: current-count }
+                { poll-id: poll-id }
+            )
+            (map-set category-counts
+                { category: category }
+                { count: (+ current-count u1) }
+            )
+            (ok true)
+        )
     )
 )
